@@ -13,6 +13,7 @@ import datetime
 st.set_page_config(page_title="Global Portfolio Analytics Dashboard", layout="wide")
 st.title("🌍 Portfolio Analytics Dashboard using QuantStats")
 
+# Extend pandas with QuantStats methods
 qs.extend_pandas()
 
 # -------------------------------
@@ -23,29 +24,42 @@ def fetch_data(tickers, start_date, end_date):
     valid_data = {}
     for t in tickers:
         try:
+            # Fetching 'Close' prices
             df = yf.download(t, start=start_date, end=end_date)['Close']
             if not df.empty:
-                valid_data[t] = df
+                # Ensure we handle cases where yf returns a MultiIndex or Series
+                if isinstance(df, pd.DataFrame):
+                    valid_data[t] = df.iloc[:, 0]
+                else:
+                    valid_data[t] = df
             else:
-                st.warning(f"No data for {t}. Skipped.")
+                st.warning(f"No data found for {t} in the selected range.")
         except Exception as e:
             st.warning(f"Ticker {t} failed: {e}")
 
     if not valid_data:
         return None
 
-    # Align all Series into a DataFrame
+    # Align all Series into a single DataFrame
     return pd.concat(valid_data.values(), axis=1, keys=valid_data.keys())
 
-def compute_portfolio_returns(data, tickers, weights):
+def compute_portfolio_returns(data, ticker_weight_map):
     """Compute portfolio returns with weights realigned to available tickers."""
     valid_tickers = list(data.columns)
-    valid_weights = [weights[tickers.index(t)] for t in valid_tickers]
+    
+    # Extract weights only for tickers that successfully downloaded
+    raw_weights = [ticker_weight_map[t] for t in valid_tickers]
+    
+    # Re-normalize weights to sum to 1.0 (in case some tickers were dropped)
+    total_w = sum(raw_weights)
+    valid_weights = [w / total_w for w in raw_weights] if total_w > 0 else [1/len(valid_tickers)] * len(valid_tickers)
 
+    # Calculate daily returns
     returns = data.pct_change().dropna()
     if returns.empty:
         return pd.Series(dtype=float)
 
+    # Weighted sum of returns
     portfolio_returns = (returns * valid_weights).sum(axis=1)
     return portfolio_returns
 
@@ -65,22 +79,26 @@ def display_metrics(portfolio_returns):
         st.metric("Volatility", f"{round(qs.stats.volatility(portfolio_returns)*100, 2)}%")
 
 def plot_weights(tickers, weights):
-    st.subheader("Portfolio Weights")
+    st.subheader("Portfolio Weights (Realigned)")
     pie_data = pd.DataFrame({'Ticker': tickers, 'Weight': weights})
-    fig_pie = px.pie(pie_data, values='Weight', names='Ticker', title='Portfolio Allocation')
+    fig_pie = px.pie(pie_data, values='Weight', names='Ticker', title='Final Portfolio Allocation')
     st.plotly_chart(fig_pie, use_container_width=True)
 
 def plot_returns(portfolio_returns):
     if portfolio_returns.empty:
         return
     st.subheader("Monthly Returns Heatmap")
-    st.dataframe(qs.stats.monthly_returns(portfolio_returns).style.format("{:.2%}"))
+    # QuantStats monthly returns returns a DF
+    m_ret = qs.stats.monthly_returns(portfolio_returns)
+    st.dataframe(m_ret.style.format("{:.2%}"))
+    
     st.subheader("Cumulative Returns")
     cum_returns = (1 + portfolio_returns).cumprod()
-    st.plotly_chart(px.line(cum_returns, title="Cumulative Returns"), use_container_width=True)
+    st.plotly_chart(px.line(cum_returns, title="Cumulative Returns Growth"), use_container_width=True)
+    
     st.subheader("End of Year Returns")
     eoy_returns = qs.stats.yearly_returns(portfolio_returns) * 100
-    st.bar_chart(eoy_returns.T)
+    st.bar_chart(eoy_returns)
 
 def generate_report(portfolio_returns, benchmark=None):
     if portfolio_returns.empty:
@@ -100,18 +118,24 @@ def generate_report(portfolio_returns, benchmark=None):
 # -------------------------------
 st.sidebar.header("Portfolio Configurations")
 
-tickers_input = st.sidebar.text_area("Enter tickers (comma separated)", value="AAPL, MSFT, TSLA, ^GSPC")
+# Default input
+tickers_input = st.sidebar.text_area("Enter tickers (comma separated)", value="SCOM.NR, EQTY.NR, KCB.NR, EABL.NR")
 tickers = [t.strip() for t in tickers_input.split(",") if t.strip()]
 
 weights = []
 if tickers:
     st.sidebar.subheader("Assign Portfolio Weights")
     for t in tickers:
-        default_value = int(100 / len(tickers))
-        w = st.sidebar.slider(f"Weight for {t} (%)", 0, 100, default_value, 1)
+        default_val = 100 // len(tickers)
+        w = st.sidebar.slider(f"Weight for {t} (%)", 0, 100, default_val, 1)
         weights.append(w)
-    total_weight = sum(weights)
-    normalized_weights = [w / total_weight for w in weights] if total_weight > 0 else [1 / len(tickers)] * len(tickers)
+    
+    total_weight_input = sum(weights)
+    # Create normalized weights (sum to 1.0)
+    normalized_weights = [w / total_weight_input for w in weights] if total_weight_input > 0 else [1/len(tickers)] * len(tickers)
+    
+    # Create the mapping for robustness
+    ticker_weight_map = dict(zip(tickers, normalized_weights))
 
 start_date = st.sidebar.date_input("Start Date", datetime.date(2015, 1, 1))
 end_date = st.sidebar.date_input("End Date", datetime.date.today())
@@ -123,16 +147,32 @@ benchmark_ticker = st.sidebar.text_input("Benchmark Ticker", value="^GSPC")
 if st.sidebar.button("Generate Analysis"):
     if not tickers:
         st.error("Please enter at least one ticker.")
+    elif start_date >= end_date:
+        st.error("Start Date must be before End Date.")
     else:
         with st.spinner("Fetching data and computing analytics..."):
             data = fetch_data(tickers, start_date, end_date)
+            
             if data is not None:
-                if len(data.columns) != len(tickers):
-                    st.warning("Some tickers had no data and were skipped. Weights have been realigned.")
+                # Identify which tickers actually made it into the data
+                valid_tickers_list = list(data.columns)
+                
+                if len(valid_tickers_list) < len(tickers):
+                    missing = set(tickers) - set(valid_tickers_list)
+                    st.warning(f"Skipped tickers with no data: {', '.join(missing)}. Weights have been realigned.")
 
-                portfolio_returns = compute_portfolio_returns(data, tickers, normalized_weights)
+                # Compute Returns
+                portfolio_returns = compute_portfolio_returns(data, ticker_weight_map)
+                
+                # Display Results
                 display_metrics(portfolio_returns)
-                plot_weights(list(data.columns), [normalized_weights[tickers.index(t)] for t in data.columns])
+                
+                # Plot dynamic weights (re-normalized)
+                current_weights = [ticker_weight_map[t] for t in valid_tickers_list]
+                total_curr = sum(current_weights)
+                final_weights = [cw/total_curr for cw in current_weights]
+                plot_weights(valid_tickers_list, final_weights)
+                
                 plot_returns(portfolio_returns)
 
                 # Benchmark handling
@@ -146,3 +186,5 @@ if st.sidebar.button("Generate Analysis"):
                         st.warning(f"Benchmark {benchmark_ticker} failed: {e}")
 
                 generate_report(portfolio_returns, benchmark=benchmark)
+            else:
+                st.error("No data could be retrieved for any of the tickers. Please check the symbols.")
