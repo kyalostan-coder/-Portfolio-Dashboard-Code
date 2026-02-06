@@ -32,21 +32,24 @@ def fetch_data(tickers, start_date, end_date):
             st.warning(f"Ticker {t} failed: {e}")
 
     if not valid_data:
-        return None  # guard against empty dict
+        return None
 
     # Align all Series into a DataFrame
     return pd.concat(valid_data.values(), axis=1, keys=valid_data.keys())
 
-def compute_portfolio_returns(data, weights):
-    """Compute portfolio returns given price data and normalized weights."""
+def compute_portfolio_returns(data, tickers, weights):
+    """Compute portfolio returns with weights realigned to available tickers."""
+    valid_tickers = list(data.columns)
+    valid_weights = [weights[tickers.index(t)] for t in valid_tickers]
+
     returns = data.pct_change().dropna()
     if returns.empty:
         return pd.Series(dtype=float)
-    portfolio_returns = (returns * weights).sum(axis=1)
+
+    portfolio_returns = (returns * valid_weights).sum(axis=1)
     return portfolio_returns
 
 def display_metrics(portfolio_returns):
-    """Show key portfolio metrics safely."""
     if portfolio_returns.empty:
         st.error("Portfolio returns are empty. Adjust tickers or date range.")
         return
@@ -124,9 +127,12 @@ if st.sidebar.button("Generate Analysis"):
         with st.spinner("Fetching data and computing analytics..."):
             data = fetch_data(tickers, start_date, end_date)
             if data is not None:
-                portfolio_returns = compute_portfolio_returns(data, normalized_weights)
+                if len(data.columns) != len(tickers):
+                    st.warning("Some tickers had no data and were skipped. Weights have been realigned.")
+
+                portfolio_returns = compute_portfolio_returns(data, tickers, normalized_weights)
                 display_metrics(portfolio_returns)
-                plot_weights(tickers, normalized_weights)
+                plot_weights(list(data.columns), [normalized_weights[tickers.index(t)] for t in data.columns])
                 plot_returns(portfolio_returns)
 
                 # Benchmark handling
