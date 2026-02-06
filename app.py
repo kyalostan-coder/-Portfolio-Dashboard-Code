@@ -30,9 +30,12 @@ def fetch_data(tickers, start_date, end_date):
                 st.warning(f"No data for {t}. Skipped.")
         except Exception as e:
             st.warning(f"Ticker {t} failed: {e}")
+
     if not valid_data:
-        return None
-    return pd.DataFrame(valid_data)
+        return None  # guard against empty dict
+
+    # Align all Series into a DataFrame
+    return pd.concat(valid_data.values(), axis=1, keys=valid_data.keys())
 
 def compute_portfolio_returns(data, weights):
     """Compute portfolio returns given price data and normalized weights."""
