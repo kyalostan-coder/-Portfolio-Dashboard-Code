@@ -1,128 +1,77 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-import requests
-import datetime
-import quantstats as qs
-import tempfile
-import os
+import matplotlib.pyplot as plt
 
-# --- 1. CONFIGURATION ---
-# Key from your RapidAPI dashboard screenshot
-RAPID_API_KEY = "a538064f41mshc71e1793ca5fdf0p17493ajsn7f58ff8e39b7"
-RAPID_API_HOST = "yh-finance.p.rapidapi.com"
+# 1. Sidebar Inputs [2, 3]
+st.sidebar.title("Stock Dashboard")
+ticker = st.sidebar.text_input("Enter Stock Ticker", value="MSFT") # Default to Microsoft [2, 4]
+start_date = st.sidebar.date_input("Start Date") # User selects start date [2]
+end_date = st.sidebar.date_input("End Date")     # User selects end date [2]
 
-# --- 2. DATA FETCHING ---
-def fetch_historical_data(ticker, start_date, end_date):
-    """Fetches and parses historical data from YH Finance API."""
-    url = f"https://{RAPID_API_HOST}/stock/v3/get-historical-data"
+# 2. Fetching Data [3, 4]
+# The video mentions using yf.download or the Ticker object
+data = yf.download(ticker, start=start_date, end=end_date)
+
+# 3. Initialize Tabs [3]
+# The transcript lists specific tabs created for the dashboard
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Raw Data", 
+    "Price Chart", 
+    "Volume Chart", 
+    "Moving Averages", 
+    "Dividends & Splits"
+])
+
+# Tab 1: Raw Data [3, 5]
+with tab1:
+    # Shows the tail of the data (e.g., 2020-2024)
+    st.write(data.tail())
     
-    # Convert dates to Unix timestamps (required by this API)
-    p1 = int(datetime.datetime.combine(start_date, datetime.time()).timestamp())
-    p2 = int(datetime.datetime.combine(end_date, datetime.time()).timestamp())
+    # Button to download data to CSV
+    csv = data.to_csv().encode('utf-8')
+    st.download_button(
+        label="Download data to CSV",
+        data=csv,
+        file_name=f'{ticker}_data.csv',
+        mime='text/csv',
+    )
+
+# Tab 2: Price Chart [6, 7]
+with tab2:
+    if not data.empty:
+        st.line_chart(data['Close'])
+    else:
+        st.write("Closing price data is not available for this stock")
+
+# Tab 3: Volume Chart [8]
+with tab3:
+    # Described as a bar chart with default blue color
+    st.bar_chart(data['Volume'])
+
+# Tab 4: Moving Averages [9-11]
+with tab4:
+    # The transcript mentions moving averages are "controllable in days"
+    # and uses Matplotlib (plt)
+    ma_days = st.slider("Select Days for Moving Average", 5, 50, 20) # Range 20-50 mentioned in [11]
     
-    querystring = {"symbol": ticker, "region": "US"}
-    headers = {
-        "x-rapidapi-key": RAPID_API_KEY,
-        "x-rapidapi-host": RAPID_API_HOST
-    }
+    fig, ax = plt.subplots()
+    ax.plot(data['Close'], label='Close Price')
+    ax.plot(data['Close'].rolling(window=ma_days).mean(), label=f'{ma_days}-Day MA')
+    ax.legend()
+    st.pyplot(fig)
 
-    try:
-        response = requests.get(url, headers=headers, params=querystring, timeout=15)
-        
-        # Check for HTTP errors before parsing
-        if response.status_code != 200:
-            st.error(f"API Error {response.status_code} for {ticker}: {response.text}")
-            return None
-        
-        # Verify response isn't empty to avoid "line 1 column 1" error
-        if not response.content:
-            st.error(f"Empty response received for {ticker}")
-            return None
-            
-        json_data = response.json()
-        
-        # Access the nested 'prices' key in the YH Finance response structure
-        prices_list = json_data.get('prices', [])
-        if not prices_list:
-            st.warning(f"No price data found in response for {ticker}")
-            return None
-            
-        df = pd.DataFrame(prices_list)
-        
-        # Convert timestamps and clean data
-        df['date'] = pd.to_datetime(df['date'], unit='s')
-        df = df.set_index('date').sort_index()
-        
-        # Select adjusted close for accurate total returns
-        if 'adjclose' in df.columns:
-            series = df['adjclose']
-        else:
-            series = df['close']
-            
-        # Filter for requested range
-        mask = (series.index >= pd.Timestamp(start_date)) & (series.index <= pd.Timestamp(end_date))
-        return series.loc[mask]
-
-    except requests.exceptions.JSONDecodeError:
-        st.error(f"Failed to parse JSON for {ticker}. Check your API subscription/quota.")
-        return None
-    except Exception as e:
-        st.error(f"Unexpected error with {ticker}: {e}")
-        return None
-
-# --- 3. UI SETUP ---
-st.set_page_config(page_title="NSE Portfolio Analytics", layout="wide")
-st.title("🇰🇪 Kenyan Portfolio Analytics (RapidAPI)")
-
-with st.sidebar:
-    st.header("Portfolio Configuration")
-    tickers_input = st.text_area("NSE Tickers (comma separated)", "SCOM.KE, EQTY.KE, KCB.KE")
-    tickers = [t.strip() for t in tickers_input.split(",") if t.strip()]
+# Tab 5: Dividends and Splits [11, 12]
+with tab5:
+    # Accessing dividend and split data via the Ticker object
+    stock = yf.Ticker(ticker)
     
-    start_dt = st.date_input("Analysis Start", datetime.date(2023, 1, 1))
-    end_dt = st.date_input("Analysis End", datetime.date.today())
+    st.write("Dividends")
+    st.write(stock.dividends)
     
-    run_btn = st.button("Generate Kenyan Market Analysis")
-
-# --- 4. EXECUTION ---
-if run_btn:
-    with st.spinner("Accessing financial databases..."):
-        all_series = {}
-        for t in tickers:
-            data = fetch_historical_data(t, start_dt, end_dt)
-            if data is not None:
-                all_series[t] = data
-        
-        if all_series:
-            # Combine into DataFrame and handle missing trading days
-            combined_df = pd.concat(all_series.values(), axis=1, keys=all_series.keys())
-            combined_df = combined_df.ffill().dropna()
-            
-            # Compute portfolio returns (Equal Weighted)
-            returns = combined_df.pct_change().mean(axis=1).dropna()
-            
-            # --- Visualizations ---
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Performance Metrics")
-                st.metric("Total Period Return", f"{round((returns.add(1).prod() - 1) * 100, 2)}%")
-                st.metric("Daily Volatility", f"{round(returns.std() * 100, 2)}%")
-            
-            with col2:
-                st.subheader("Cumulative Growth")
-                st.line_chart((1 + returns).cumprod())
-            
-            # --- Heatmap ---
-            st.subheader("Monthly Performance Heatmap")
-            qs.extend_pandas()
-            monthly_ret = qs.stats.monthly_returns(returns)
-            st.dataframe(monthly_ret.style.format("{:.2%}"), use_container_width=True)
-            
-            # --- QuantStats HTML Report ---
-            st.subheader("Download Detailed Report")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
-                qs.reports.html(returns, output=tmp.name, title="NSE Portfolio Analytics Report")
-                with open(tmp.name, "rb") as f:
-                    st.download_button("Download Full HTML Report", f, "NSE_Report.html")
-        else:
-            st.error("No valid data retrieved. Verify ticker symbols and API key.")
+    st.write("Splits")
+    st.write(stock.splits)
+How to Run the Code
+According to the transcript, once the code is saved (e.g., as stock_dashboard.py), you run it using the terminal command:
+streamlit run stock_dashboard.streamlit (or .py)
+This launches the dashboard on Local Host 8501 where you can interact with the sidebar and tabs.
