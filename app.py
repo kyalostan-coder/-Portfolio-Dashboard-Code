@@ -71,7 +71,4 @@ with tab5:
     
     st.write("Splits")
     st.write(stock.splits)
-How to Run the Code
-According to the transcript, once the code is saved (e.g., as stock_dashboard.py), you run it using the terminal command:
-streamlit run stock_dashboard.streamlit (or .py)
-This launches the dashboard on Local Host 8501 where you can interact with the sidebar and tabs.
+
